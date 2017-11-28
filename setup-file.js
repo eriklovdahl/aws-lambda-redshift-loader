@@ -23,379 +23,374 @@ var lambda;
 var kmsCrypto = require('./kmsCrypto');
 var setRegion;
 
-var configJson  = process.argv[2] || './config.json';
+var configJson = process.argv[2] || './config.json';
 var setupConfig = require(configJson);
-
-dynamoConfig = {
-    TableName : configTable,
-    Item : {
-	currentBatch : {
-	    S : uuid.v4()
-	},
-	version : {
-	    S : pjson.version
-	},
-	loadClusters : {
-	    L : [ {
-		M : {}
-	    } ]
-	}
-    }
-};
 
 // fake rl for common.js dependency
 var rl = {
-    close : function() {
-	// fake close function
-    }
+  close: function () {
+    // fake close function
+  }
 };
 
 var qs = [];
 
-q_region = function(callback) {
-    var regionsArray = [ "ap-northeast-1", "ap-northeast-2", "ap-southeast-1", "ap-southeast-2", "eu-central-1", "eu-west-1", "sa-east-1", "us-east-1", "us-west-1", "us-west-2" ];
-    // region for the configuration
-    if (common.blank(setupConfig.region) !== null) {
-	common.validateArrayContains(regionsArray, setupConfig.region.toLowerCase(), rl);
+q_config = function (config, callback) {
+  callback(null, config, {
+    TableName: configTable,
+    Item: {
+      currentBatch: {
+        S: uuid.v4()
+      },
+      version: {
+        S: pjson.version
+      },
+      loadClusters: {
+        L: [{
+          M: {}
+        }]
+      }
+    }
+  });
+};
 
-	setRegion = setupConfig.region.toLowerCase();
+q_region = function (config, dynamoConfig, callback) {
+  var regionsArray = ["ap-northeast-1", "ap-northeast-2", "ap-southeast-1", "ap-southeast-2", "eu-central-1", "eu-west-1", "sa-east-1", "us-east-1", "us-west-1", "us-west-2"];
+  // region for the configuration
+  if (common.blank(config.region) !== null) {
+    common.validateArrayContains(regionsArray, config.region.toLowerCase(), rl);
 
-	// configure dynamo db and kms for the correct region
-	dynamoDB = new aws.DynamoDB({
-	    apiVersion : '2012-08-10',
-	    region : setRegion
-	});
-	kmsCrypto.setRegion(setRegion);
+    setRegion = config.region.toLowerCase();
+
+    // configure dynamo db and kms for the correct region
+    dynamoDB = new aws.DynamoDB({
+      apiVersion: '2012-08-10',
+      region: setRegion
+    });
+    kmsCrypto.setRegion(setRegion);
     s3 = new aws.S3({
-        apiVersion: '2006-03-01'
+      apiVersion: '2006-03-01'
     });
     lambda = new aws.Lambda({
-        apiVersion: '2015-03-31',
-        region: setRegion
+      apiVersion: '2015-03-31',
+      region: setRegion
     });
 
-	callback(null);
+    callback(null, config, dynamoConfig);
+  } else {
+    console.log('You must provide a region from ' + regionsArray.toString())
+  }
+};
+
+q_s3Prefix = function (config, dynamoConfig, callback) {
+  // the S3 Bucket & Prefix to watch for files
+  common.validateNotNull(config.s3Prefix, 'You Must Provide an S3 Bucket Name, and optionally a Prefix', rl);
+
+  // setup prefix to be * if one was not provided
+  var stripped = config.s3Prefix.replace(new RegExp('s3://', 'g'), '');
+  var elements = stripped.split("/");
+  var setPrefix = undefined;
+
+  if (elements.length === 1) {
+    // bucket only so use "bucket" alone
+    setPrefix = elements[0];
+  } else {
+    // right trim "/"
+    setPrefix = stripped.replace(/\/$/, '');
+  }
+
+  dynamoConfig.Item.s3Prefix = {
+    S: setPrefix
+  };
+
+  callback(null, config, dynamoConfig);
+};
+
+q_filenameFilter = function (config, dynamoConfig, callback) {
+  // a Filename Filter Regex
+  if (common.blank(config.filenameFilter) !== null) {
+    dynamoConfig.Item.filenameFilterRegex = {
+      S: config.filenameFilter
+    };
+  }
+  callback(null, config, dynamoConfig);
+};
+
+q_clusterEndpoint = function (config, dynamoConfig, callback) {
+  // the Cluster Endpoint
+  common.validateNotNull(config.clusterEndpoint, 'You Must Provide a Cluster Endpoint', rl);
+  dynamoConfig.Item.loadClusters.L[0].M.clusterEndpoint = {
+    S: config.clusterEndpoint
+  };
+  callback(null, config, dynamoConfig);
+};
+
+q_clusterPort = function (config, dynamoConfig, callback) {
+  // the Cluster Port
+  dynamoConfig.Item.loadClusters.L[0].M.clusterPort = {
+    N: '' + common.getIntValue(config.clusterPort, rl)
+  };
+  callback(null, config, dynamoConfig);
+};
+
+q_clusterUseSSL = function (config, dynamoConfig, callback) {
+  // Does your cluster use SSL (Y/N)
+  dynamoConfig.Item.loadClusters.L[0].M.useSSL = {
+    BOOL: common.getBooleanValue(config.clusterUseSSL)
+  };
+  callback(null, config, dynamoConfig);
+};
+
+q_clusterDB = function (config, dynamoConfig, callback) {
+  // the Database Name
+  if (common.blank(config.clusterDB) !== null) {
+    dynamoConfig.Item.loadClusters.L[0].M.clusterDB = {
+      S: config.clusterDB
+    };
+  }
+  callback(null, config, dynamoConfig);
+};
+
+q_userName = function (config, dynamoConfig, callback) {
+  // the Database Username
+  common.validateNotNull(config.userName, 'You Must Provide a Username', rl);
+  dynamoConfig.Item.loadClusters.L[0].M.connectUser = {
+    S: config.userName
+  };
+  callback(null, config, dynamoConfig);
+};
+
+q_userPwd = function (config, dynamoConfig, callback) {
+  // the Database Password
+  common.validateNotNull(config.userPwd, 'You Must Provide a Password', rl);
+
+  kmsCrypto.encrypt(config.userPwd, function (err, ciphertext) {
+    if (err) {
+      console.log(JSON.stringify(err));
+      process.exit(ERROR);
     } else {
-	console.log('You must provide a region from ' + regionsArray.toString())
+      dynamoConfig.Item.loadClusters.L[0].M.connectPassword = {
+        S: kmsCrypto.toLambdaStringFormat(ciphertext)
+      };
+      callback(null, config, dynamoConfig);
     }
+  });
 };
 
-q_s3Prefix = function(callback) {
-    // the S3 Bucket & Prefix to watch for files
-    common.validateNotNull(setupConfig.s3Prefix, 'You Must Provide an S3 Bucket Name, and optionally a Prefix', rl);
+q_table = function (config, dynamoConfig, callback) {
+  // the Table to be Loaded
+  common.validateNotNull(config.table, 'You Must Provide a Table Name', rl);
+  dynamoConfig.Item.loadClusters.L[0].M.targetTable = {
+    S: config.table
+  };
+  callback(null, config, dynamoConfig);
+};
 
-    // setup prefix to be * if one was not provided
-    var stripped = setupConfig.s3Prefix.replace(new RegExp('s3://', 'g'), '');
-    var elements = stripped.split("/");
-    var setPrefix = undefined;
+q_columnList = function (config, dynamoConfig, callback) {
+  // the comma-delimited column list (optional)
+  if (config.columnList && common.blank(config.columnList) !== null) {
+    dynamoConfig.Item.loadClusters.L[0].M.columnList = {
+      S: config.columnList
+    };
+    callback(null, config, dynamoConfig);
+  } else {
+    callback(null, config, dynamoConfig);
+  }
+};
 
-    if (elements.length === 1) {
-	// bucket only so use "bucket" alone
-	setPrefix = elements[0];
-    } else {
-	// right trim "/"
-	setPrefix = stripped.replace(/\/$/, '');
+q_truncateTable = function (config, dynamoConfig, callback) {
+  // Should the Table be Truncated before Load? (Y/N)
+  dynamoConfig.Item.loadClusters.L[0].M.truncateTarget = {
+    BOOL: common.getBooleanValue(config.truncateTable)
+  };
+  callback(null, config, dynamoConfig);
+};
+
+q_df = function (config, dynamoConfig, callback) {
+  // the Data Format (CSV, JSON or AVRO)
+  common.validateArrayContains(['CSV', 'JSON', 'AVRO'], config.df.toUpperCase(), rl);
+  dynamoConfig.Item.dataFormat = {
+    S: config.df.toUpperCase()
+  };
+  callback(null, config, dynamoConfig);
+};
+
+q_csvDelimiter = function (config, dynamoConfig, callback) {
+  if (dynamoConfig.Item.dataFormat.S === 'CSV') {
+    // the CSV Delimiter
+    common.validateNotNull(config.csvDelimiter, 'You Must the Delimiter for CSV Input', rl);
+    dynamoConfig.Item.csvDelimiter = {
+      S: config.csvDelimiter
+    };
+    callback(null, config, dynamoConfig);
+  } else {
+    callback(null, config, dynamoConfig);
+  }
+};
+
+q_jsonPaths = function (config, dynamoConfig, callback) {
+  if (dynamoConfig.Item.dataFormat.S === 'JSON' || dynamoConfig.Item.dataFormat.S === 'AVRO') {
+    // the JSON Paths File Location on S3 (or NULL for Auto)
+    if (common.blank(config.jsonPaths) !== null) {
+      dynamoConfig.Item.jsonPath = {
+        S: config.jsonPaths
+      };
     }
+    callback(null, config, dynamoConfig);
+  } else {
+    callback(null, config, dynamoConfig);
+  }
+};
 
-    dynamoConfig.Item.s3Prefix = {
-	S : setPrefix
+q_manifestBucket = function (config, dynamoConfig, callback) {
+  // the S3 Bucket for Redshift COPY Manifests
+  common.validateNotNull(config.manifestBucket, 'You Must Provide a Bucket Name for Manifest File Storage', rl);
+  dynamoConfig.Item.manifestBucket = {
+    S: config.manifestBucket
+  };
+  callback(null, config, dynamoConfig);
+};
+
+q_manifestPrefix = function (config, dynamoConfig, callback) {
+  // the Prefix for Redshift COPY Manifests
+  common.validateNotNull(config.manifestPrefix, 'You Must Provide a Prefix for Manifests', rl);
+  dynamoConfig.Item.manifestKey = {
+    S: config.manifestPrefix
+  };
+  callback(null, config, dynamoConfig);
+};
+
+q_failedManifestPrefix = function (config, dynamoConfig, callback) {
+  // the Prefix to use for Failed Load Manifest Storage
+  common.validateNotNull(config.failedManifestPrefix, 'You Must Provide a Prefix for Manifests', rl);
+  dynamoConfig.Item.failedManifestKey = {
+    S: config.failedManifestPrefix
+  };
+  callback(null, config, dynamoConfig);
+};
+
+q_accessKey = function (config, dynamoConfig, callback) {
+  // the Access Key used by Redshift to get data from S3.
+  // If NULL then Lambda execution role credentials will be used
+  if (!config.accessKey) {
+    callback(null, config, dynamoConfig);
+  } else {
+    dynamoConfig.Item.accessKeyForS3 = {
+      S: config.accessKey
     };
-
-    callback(null);
+    callback(null, config, dynamoConfig);
+  }
 };
 
-q_filenameFilter = function(callback) {
-    // a Filename Filter Regex
-    if (common.blank(setupConfig.filenameFilter) !== null) {
-	dynamoConfig.Item.filenameFilterRegex = {
-	    S : setupConfig.filenameFilter
-	};
-    }
-    callback(null);
-};
-
-q_clusterEndpoint = function(callback) {
-    // the Cluster Endpoint
-    common.validateNotNull(setupConfig.clusterEndpoint, 'You Must Provide a Cluster Endpoint', rl);
-    dynamoConfig.Item.loadClusters.L[0].M.clusterEndpoint = {
-	S : setupConfig.clusterEndpoint
-    };
-    callback(null);
-};
-
-q_clusterPort = function(callback) {
-    // the Cluster Port
-    dynamoConfig.Item.loadClusters.L[0].M.clusterPort = {
-	N : '' + common.getIntValue(setupConfig.clusterPort, rl)
-    };
-    callback(null);
-};
-
-q_clusterUseSSL = function(callback) {
-    // Does your cluster use SSL (Y/N)
-    dynamoConfig.Item.loadClusters.L[0].M.useSSL = {
-	BOOL : common.getBooleanValue(setupConfig.clusterUseSSL)
-    };
-    callback(null);
-};
-
-q_clusterDB = function(callback) {
-    // the Database Name
-    if (common.blank(setupConfig.clusterDB) !== null) {
-	dynamoConfig.Item.loadClusters.L[0].M.clusterDB = {
-	    S : setupConfig.clusterDB
-	};
-    }
-    callback(null);
-};
-
-q_userName = function(callback) {
-    // the Database Username
-    common.validateNotNull(setupConfig.userName, 'You Must Provide a Username', rl);
-    dynamoConfig.Item.loadClusters.L[0].M.connectUser = {
-	S : setupConfig.userName
-    };
-    callback(null);
-};
-
-q_userPwd = function(callback) {
-    // the Database Password
-    common.validateNotNull(setupConfig.userPwd, 'You Must Provide a Password', rl);
-
-    kmsCrypto.encrypt(setupConfig.userPwd, function(err, ciphertext) {
-	if (err) {
-	    console.log(JSON.stringify(err));
-	    process.exit(ERROR);
-	} else {
-	    dynamoConfig.Item.loadClusters.L[0].M.connectPassword = {
-		S : kmsCrypto.toLambdaStringFormat(ciphertext)
-	    };
-	    callback(null);
-	}
+q_secretKey = function (config, dynamoConfig, callback) {
+  // the Secret Key used by Redshift to get data from S3.
+  // If NULL then Lambda execution role credentials will be used
+  if (!config.secretKey) {
+    callback(null, config, dynamoConfig);
+  } else {
+    kmsCrypto.encrypt(config.secretKey, function (err, ciphertext) {
+      if (err) {
+        console.log(JSON.stringify(err));
+        process.exit(ERROR);
+      } else {
+        dynamoConfig.Item.secretKeyForS3 = {
+          S: kmsCrypto.toLambdaStringFormat(ciphertext)
+        };
+        callback(null, config, dynamoConfig);
+      }
     });
+  }
 };
 
-q_table = function(callback) {
-    // the Table to be Loaded
-    common.validateNotNull(setupConfig.table, 'You Must Provide a Table Name', rl);
-    dynamoConfig.Item.loadClusters.L[0].M.targetTable = {
-	S : setupConfig.table
+q_symmetricKey = function (config, dynamoConfig, callback) {
+  // If Encrypted Files are used, Enter the Symmetric Master Key Value
+  if (config.symmetricKey && common.blank(config.symmetricKey) !== null) {
+    kmsCrypto.encrypt(config.symmetricKey, function (err, ciphertext) {
+      if (err) {
+        console.log(JSON.stringify(err));
+        process.exit(ERROR);
+      } else {
+        dynamoConfig.Item.masterSymmetricKey = {
+          S: kmsCrypto.toLambdaStringFormat(ciphertext)
+        };
+        callback(null, config, dynamoConfig);
+      }
+    });
+  } else {
+    callback(null, config, dynamoConfig);
+  }
+};
+
+q_failureTopic = function (config, dynamoConfig, callback) {
+  // the SNS Topic ARN for Failed Loads
+  if (common.blank(config.failureTopic) !== null) {
+    dynamoConfig.Item.failureTopicARN = {
+      S: config.failureTopic
     };
-    callback(null);
+  }
+  callback(null, config, dynamoConfig);
 };
 
-q_columnList = function(callback) {
-    // the comma-delimited column list (optional)
-    if (setupConfig.columnList && common.blank(setupConfig.columnList) !== null) {
-	dynamoConfig.Item.loadClusters.L[0].M.columnList = {
-	    S : setupConfig.columnList
-	};
-	callback(null);
-    } else {
-	callback(null);
-    }
-};
-
-q_truncateTable = function(callback) {
-    // Should the Table be Truncated before Load? (Y/N)
-    dynamoConfig.Item.loadClusters.L[0].M.truncateTarget = {
-	BOOL : common.getBooleanValue(setupConfig.truncateTable)
+q_successTopic = function (config, dynamoConfig, callback) {
+  // the SNS Topic ARN for Successful Loads
+  if (common.blank(config.successTopic) !== null) {
+    dynamoConfig.Item.successTopicARN = {
+      S: config.successTopic
     };
-    callback(null);
+  }
+  callback(null, config, dynamoConfig);
 };
 
-q_df = function(callback) {
-    // the Data Format (CSV, JSON or AVRO)
-    common.validateArrayContains([ 'CSV', 'JSON', 'AVRO' ], setupConfig.df.toUpperCase(), rl);
-    dynamoConfig.Item.dataFormat = {
-	S : setupConfig.df.toUpperCase()
+q_batchSize = function (config, dynamoConfig, callback) {
+  // How many files should be buffered before loading?
+  if (common.blank(config.batchSize) !== null) {
+    dynamoConfig.Item.batchSize = {
+      N: '' + common.getIntValue(config.batchSize, rl)
     };
-    callback(null);
+  }
+  callback(null, config, dynamoConfig);
 };
 
-q_csvDelimiter = function(callback) {
-    if (dynamoConfig.Item.dataFormat.S === 'CSV') {
-	// the CSV Delimiter
-	common.validateNotNull(setupConfig.csvDelimiter, 'You Must the Delimiter for CSV Input', rl);
-	dynamoConfig.Item.csvDelimiter = {
-	    S : setupConfig.csvDelimiter
-	};
-	callback(null);
-    } else {
-	callback(null);
-    }
-};
-
-q_jsonPaths = function(callback) {
-    if (dynamoConfig.Item.dataFormat.S === 'JSON' || dynamoConfig.Item.dataFormat.S === 'AVRO') {
-	// the JSON Paths File Location on S3 (or NULL for Auto)
-	if (common.blank(setupConfig.jsonPaths) !== null) {
-	    dynamoConfig.Item.jsonPath = {
-		S : setupConfig.jsonPaths
-	    };
-	}
-	callback(null);
-    } else {
-	callback(null);
-    }
-};
-
-q_manifestBucket = function(callback) {
-    // the S3 Bucket for Redshift COPY Manifests
-    common.validateNotNull(setupConfig.manifestBucket, 'You Must Provide a Bucket Name for Manifest File Storage', rl);
-    dynamoConfig.Item.manifestBucket = {
-	S : setupConfig.manifestBucket
+q_batchBytes = function (config, dynamoConfig, callback) {
+  // Batches can be buffered up to a specified size. How large should a batch
+  // be before processing (bytes)?
+  if (common.blank(config.batchSizeBytes) !== null) {
+    dynamoConfig.Item.batchSizeBytes = {
+      N: '' + common.getIntValue(config.batchSizeBytes, rl)
     };
-    callback(null);
+  }
+  callback(null, config, dynamoConfig);
 };
 
-q_manifestPrefix = function(callback) {
-    // the Prefix for Redshift COPY Manifests
-    common.validateNotNull(setupConfig.manifestPrefix, 'You Must Provide a Prefix for Manifests', rl);
-    dynamoConfig.Item.manifestKey = {
-	S : setupConfig.manifestPrefix
+q_batchTimeoutSecs = function (config, dynamoConfig, callback) {
+  // How old should we allow a Batch to be before loading (seconds)?
+  if (common.blank(config.batchTimeoutSecs) !== null) {
+    dynamoConfig.Item.batchTimeoutSecs = {
+      N: '' + common.getIntValue(config.batchTimeoutSecs, rl)
     };
-    callback(null);
+  }
+  callback(null, config, dynamoConfig);
 };
 
-q_failedManifestPrefix = function(callback) {
-    // the Prefix to use for Failed Load Manifest Storage
-    common.validateNotNull(setupConfig.failedManifestPrefix, 'You Must Provide a Prefix for Manifests', rl);
-    dynamoConfig.Item.failedManifestKey = {
-	S : setupConfig.failedManifestPrefix
+q_copyOptions = function (config, dynamoConfig, callback) {
+  // Additional Copy Options to be added
+  if (common.blank(config.copyOptions) !== null) {
+    dynamoConfig.Item.copyOptions = {
+      S: config.copyOptions
     };
-    callback(null);
+  }
+  callback(null, config, dynamoConfig);
 };
 
-q_accessKey = function(callback) {
-    // the Access Key used by Redshift to get data from S3.
-    // If NULL then Lambda execution role credentials will be used
-    if (!setupConfig.accessKey) {
-	callback(null);
-    } else {
-	dynamoConfig.Item.accessKeyForS3 = {
-	    S : setupConfig.accessKey
-	};
-	callback(null);
-    }
+last = function (config, dynamoConfig, callback) {
+  rl.close();
+  setup(dynamoConfig, callback);
 };
 
-q_secretKey = function(callback) {
-    // the Secret Key used by Redshift to get data from S3.
-    // If NULL then Lambda execution role credentials will be used
-    if (!setupConfig.secretKey) {
-	callback(null);
-    } else {
-	kmsCrypto.encrypt(setupConfig.secretKey, function(err, ciphertext) {
-	    if (err) {
-		console.log(JSON.stringify(err));
-		process.exit(ERROR);
-	    } else {
-		dynamoConfig.Item.secretKeyForS3 = {
-		    S : kmsCrypto.toLambdaStringFormat(ciphertext)
-		};
-		callback(null);
-	    }
-	});
-    }
+setup = function (dynamoConfig, callback) {
+  common.setup(dynamoConfig, dynamoDB, s3, lambda, callback);
 };
 
-q_symmetricKey = function(callback) {
-    // If Encrypted Files are used, Enter the Symmetric Master Key Value
-    if (setupConfig.symmetricKey && common.blank(setupConfig.symmetricKey) !== null) {
-	kmsCrypto.encrypt(setupConfig.symmetricKey, function(err, ciphertext) {
-	    if (err) {
-		console.log(JSON.stringify(err));
-		process.exit(ERROR);
-	    } else {
-		dynamoConfig.Item.masterSymmetricKey = {
-		    S : kmsCrypto.toLambdaStringFormat(ciphertext)
-		};
-		callback(null);
-	    }
-	});
-    } else {
-	callback(null);
-    }
-};
-
-q_failureTopic = function(callback) {
-    // the SNS Topic ARN for Failed Loads
-    if (common.blank(setupConfig.failureTopic) !== null) {
-	dynamoConfig.Item.failureTopicARN = {
-	    S : setupConfig.failureTopic
-	};
-    }
-    callback(null);
-};
-
-q_successTopic = function(callback) {
-    // the SNS Topic ARN for Successful Loads
-    if (common.blank(setupConfig.successTopic) !== null) {
-	dynamoConfig.Item.successTopicARN = {
-	    S : setupConfig.successTopic
-	};
-    }
-    callback(null);
-};
-
-q_batchSize = function(callback) {
-    // How many files should be buffered before loading?
-    if (common.blank(setupConfig.batchSize) !== null) {
-	dynamoConfig.Item.batchSize = {
-	    N : '' + common.getIntValue(setupConfig.batchSize, rl)
-	};
-    }
-    callback(null);
-};
-
-q_batchBytes = function(callback) {
-    // Batches can be buffered up to a specified size. How large should a batch
-    // be before processing (bytes)?
-    if (common.blank(setupConfig.batchSizeBytes) !== null) {
-	dynamoConfig.Item.batchSizeBytes = {
-	    N : '' + common.getIntValue(setupConfig.batchSizeBytes, rl)
-	};
-    }
-    callback(null);
-};
-
-q_batchTimeoutSecs = function(callback) {
-    // How old should we allow a Batch to be before loading (seconds)?
-    if (common.blank(setupConfig.batchTimeoutSecs) !== null) {
-	dynamoConfig.Item.batchTimeoutSecs = {
-	    N : '' + common.getIntValue(setupConfig.batchTimeoutSecs, rl)
-	};
-    }
-    callback(null);
-};
-
-q_copyOptions = function(callback) {
-    // Additional Copy Options to be added
-    if (common.blank(setupConfig.copyOptions) !== null) {
-	dynamoConfig.Item.copyOptions = {
-	    S : setupConfig.copyOptions
-	};
-    }
-    callback(null);
-};
-
-last = function(callback) {
-    rl.close();
-
-    setup(null, callback);
-};
-
-setup = function(overrideConfig, callback) {
-    // set which configuration to use
-    var useConfig = undefined;
-    if (overrideConfig) {
-	useConfig = overrideConfig;
-    } else {
-	useConfig = dynamoConfig;
-    }
-    common.setup(useConfig, dynamoDB, s3, lambda, callback);
-};
 // export the setup module so that customers can programmatically add new
 // configurations
 exports.setup = setup;
@@ -434,4 +429,13 @@ qs.push(last);
 
 // call the first function in the function list, to invoke the callback
 // reference chain
-async.waterfall(qs);
+async.someSeries(setupConfig.loaders || [setupConfig], function (loader, callback) {
+  var mergedConfig = Object.assign({}, setupConfig, loader);
+
+  console.log('Configuring loader for prefix ' + mergedConfig.s3Prefix + ' into table ' + mergedConfig.table + ' @ ' + mergedConfig.region);
+  async.waterfall([async.apply(q_config, mergedConfig)].concat(qs), (err) => {
+    callback(null, !err);
+  });
+}, function (err, result) {
+  console.log('Done');
+});
